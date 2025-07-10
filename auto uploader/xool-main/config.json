@@ -1,16 +1,25 @@
 {
-  "ROBLOSECURITY": "COOKIE",
-  "group_id": 185412379,
-  "assets_price": 5,
-  "name_tags": [
-    "vkei",
-    "moe",
-    "evade",
-    "helmut lang",
-    "raf simons",
-    "if6w9",
-    "i6w9",
-    "hysteric"
-  ],
-  "description": "Vkei, Igari, Karakuri, Alt, Archive Fashion, Number (N)ine, Issey Miyake, Rick Owens, Hysteric Glamour, Diesel, Gothic, J-Fashion, Punk, Jrock, Visual Kei, Japanese, Vamp, Gloomy, Distressed, Vintage, Pants, Shirt, Jeans, Shorts, T-Shirt, Sweater, Top"
+    "ROBLOSECURITY": "",
+    "group_id": 0,
+    "description": "",
+    "assets_price": 5,
+    "name_tags": [
+        "cool",
+        "awesome",
+        "trendy"
+    ],
+    "sleep_each_upload": 15,
+    "parallel_uploads": false,
+    "max_workers": 3,
+    "enable_backup": true,
+    "auto_retry": true,
+    "smart_rate_limiting": true,
+    "progress_tracking": true,
+    "file_validation": true,
+    "max_file_size_mb": 10,
+    "supported_formats": [".png"],
+    "batch_size": 50,
+    "enable_caching": true,
+    "max_retries": 5,
+    "max_name_length": 50
 }

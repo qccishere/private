@@ -3,6 +3,8 @@ import os
 import time
 import xml.etree.ElementTree as ET
 import re # Import regex module
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 
 def get_asset_url(asset_id):
     """Fetches the asset delivery information and extracts the final content URL using a multi-step process."""
@@ -39,7 +41,6 @@ def get_asset_url(asset_id):
             except ET.ParseError:
                  print(f"  [Fallback] Content was not valid XML either for {asset_id}.")
                  return None
-
 
         # --- Step 2: Fetch intermediate URL to get XML with real asset ID ---
         print(f"  [Step 2] Fetching intermediate URL: {location1}...")
@@ -190,8 +191,32 @@ def download_asset(asset_id, download_folder="downloaded_assets"):
         print(f"Error saving file for ID {asset_id}: {e}")
         return False
 
-def main(ids_file="output.txt", download_folder="downloaded_assets"):
-    """Main function to read IDs and initiate downloads."""
+class RateLimiter:
+    """Simple rate limiter that adapts to rate limit responses."""
+    def __init__(self, initial_delay=0.1):
+        self.delay = initial_delay
+        self.last_request_time = 0
+        
+    def wait(self):
+        """Wait if necessary to respect rate limits."""
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        if time_since_last < self.delay:
+            time.sleep(self.delay - time_since_last)
+        self.last_request_time = time.time()
+    
+    def handle_rate_limit(self):
+        """Increase delay when rate limited."""
+        self.delay = min(self.delay * 2, 5.0)  # Max 5 seconds
+        print(f"Rate limited! Increasing delay to {self.delay:.2f}s")
+    
+    def reset(self):
+        """Reset delay on successful requests."""
+        if self.delay > 0.1:
+            self.delay = max(self.delay * 0.9, 0.1)  # Gradually decrease
+
+def main(ids_file="output.txt", download_folder="downloaded_assets", max_workers=5):
+    """Main function to read IDs and initiate downloads with parallel processing."""
     if not os.path.exists(ids_file):
         print(f"Error: IDs file '{ids_file}' not found.")
         return
@@ -200,18 +225,31 @@ def main(ids_file="output.txt", download_folder="downloaded_assets"):
         asset_ids = [line.strip() for line in f if line.strip().isdigit()]
 
     print(f"Found {len(asset_ids)} IDs in {ids_file}.")
+    print(f"Starting parallel downloads with {max_workers} workers...")
 
     successful_downloads = 0
     failed_downloads = 0
-    for i, asset_id in enumerate(asset_ids):
-        print(f"--- Processing ID {i+1}/{len(asset_ids)}: {asset_id} ---")
-        if download_asset(asset_id, download_folder):
-            successful_downloads += 1
-        else:
-            failed_downloads += 1
-
-        # Add a delay to be polite to the API
-        time.sleep(0.5) # 0.5 second delay
+    
+    # Use ThreadPoolExecutor for parallel downloads
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all download tasks
+        future_to_id = {
+            executor.submit(download_asset, asset_id, download_folder): asset_id 
+            for asset_id in asset_ids
+        }
+        
+        # Process completed downloads with progress bar
+        for future in tqdm(as_completed(future_to_id), total=len(asset_ids), desc="Downloading Assets", unit="asset"):
+            asset_id = future_to_id[future]
+            try:
+                result = future.result()
+                if result:
+                    successful_downloads += 1
+                else:
+                    failed_downloads += 1
+            except Exception as e:
+                print(f"Exception occurred for asset {asset_id}: {e}")
+                failed_downloads += 1
 
     print("\n--- Download Summary ---")
     print(f"Successful: {successful_downloads}")
