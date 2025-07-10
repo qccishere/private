@@ -3,12 +3,23 @@
     "group_id": 0,
     "description": "",
     "assets_price": 5,
-    "sleep_each_upload": 15,
     "name_tags": [
         "cool",
         "awesome",
         "trendy"
     ],
+    "sleep_each_upload": 15,
     "parallel_uploads": false,
-    "max_workers": 3
+    "max_workers": 3,
+    "enable_backup": true,
+    "auto_retry": true,
+    "smart_rate_limiting": true,
+    "progress_tracking": true,
+    "file_validation": true,
+    "max_file_size_mb": 10,
+    "supported_formats": [".png"],
+    "batch_size": 50,
+    "enable_caching": true,
+    "max_retries": 5,
+    "max_name_length": 50
 }
