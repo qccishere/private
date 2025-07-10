@@ -1,6 +1,8 @@
-# ===================================================================================
-# == MODIFIED main.py - ADDS TAGS TO NAMES BASED ON PRIORITY IN CONFIG             ==
-# ===================================================================================
+#!/usr/bin/env python3
+"""
+Automated Roblox Asset Uploader
+Uploads PNG files from SHIRTS and PANTS folders to Roblox with optimized performance.
+"""
 
 import src
 import time
@@ -10,42 +12,61 @@ import re
 import shutil
 import logging
 import sys
+import requests
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional, Any, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Constants
-BASE_FOLDER = "IMAGES_TO_UPLOAD"
-TEMP_FOLDER = os.path.join("src", "assets")
+# Configuration constants
 CONFIG_FILE = "config.json"
+BASE_FOLDER = "IMAGES_TO_UPLOAD"
+TEMP_FOLDER = "temp"
+PNG_EXTENSION = ".png"
+MAX_NAME_LENGTH = 50
+DEFAULT_PRICE = 5
+DEFAULT_SLEEP_TIME = 20  # Reduced default sleep time
+MAX_RETRIES = 3
+RETRY_DELAY = 5
+
+# Asset type mappings
 SUPPORTED_ASSET_TYPES = {
     "SHIRTS": "shirt",
     "PANTS": "pants"
 }
-MAX_NAME_LENGTH = 50
-PNG_EXTENSION = ".png"
-DEFAULT_PRICE = 5
-DEFAULT_SLEEP_TIME = 1
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
 
-# Configure logging
+# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
+        logging.FileHandler('uploader.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
+# Custom exceptions
 class ConfigError(Exception):
-    """Exception raised for configuration errors."""
+    """Raised when there's an issue with configuration."""
     pass
 
 class AssetUploadError(Exception):
-    """Exception raised for asset upload errors."""
+    """Raised when asset upload fails."""
     pass
+
+class OptimizedSession:
+    """Optimized session manager for HTTP requests."""
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        
+    def get_session(self):
+        return self.session
+        
+    def close(self):
+        self.session.close()
 
 def load_config() -> Dict[str, Any]:
     """
@@ -73,6 +94,8 @@ def load_config() -> Dict[str, Any]:
         config.setdefault("assets_price", DEFAULT_PRICE)
         config.setdefault("name_tags", [])
         config.setdefault("sleep_each_upload", DEFAULT_SLEEP_TIME)
+        config.setdefault("parallel_uploads", False)  # New option for parallel processing
+        config.setdefault("max_workers", 3)  # Conservative default for parallel uploads
         
         return config
         
@@ -297,7 +320,8 @@ def process_single_asset(
     group_id: int, 
     description: str, 
     price: int, 
-    name_tags: List[str]
+    name_tags: List[str],
+    sleep_time: float = 0
 ) -> Tuple[bool, Optional[str]]:
     """
     Process a single asset from start to finish.
@@ -310,6 +334,7 @@ def process_single_asset(
         description: Asset description
         price: Asset price
         name_tags: List of tags to append to the name
+        sleep_time: Time to sleep after processing (for rate limiting)
         
     Returns:
         Tuple of (success, error_message)
@@ -330,6 +355,10 @@ def process_single_asset(
         # Put the asset on sale
         if not release_asset_for_sale(cookie, asset_id, price, asset_name, description, group_id):
             return False, "Failed to put on sale"
+        
+        # Sleep for rate limiting if specified
+        if sleep_time > 0:
+            time.sleep(sleep_time)
             
         return True, None
         
@@ -345,8 +374,67 @@ def process_single_asset(
             except Exception as e:
                 logger.warning(f"Failed to remove temporary file {temp_path}: {e}")
 
+def process_assets_parallel(
+    images_to_process: List[Tuple[str, str]],
+    cookie: Any,
+    group_id: int,
+    description: str,
+    price: int,
+    name_tags: List[str],
+    max_workers: int = 3
+) -> Tuple[int, int, List[str]]:
+    """
+    Process assets in parallel with rate limiting.
+    
+    Returns:
+        Tuple of (successful_uploads, failed_uploads, failed_upload_details)
+    """
+    successful_uploads = 0
+    failed_uploads = 0
+    failed_upload_details = []
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all upload tasks
+        future_to_path = {
+            executor.submit(
+                process_single_asset,
+                original_path, 
+                asset_type, 
+                cookie, 
+                group_id, 
+                description, 
+                price, 
+                name_tags,
+                0  # No sleep in parallel mode, we'll handle rate limiting differently
+            ): (original_path, asset_type) 
+            for original_path, asset_type in images_to_process
+        }
+        
+        # Process completed uploads
+        for future in as_completed(future_to_path):
+            original_path, asset_type = future_to_path[future]
+            try:
+                success, error = future.result()
+                if success:
+                    successful_uploads += 1
+                    logger.info(f"✓ Completed: {os.path.basename(original_path)}")
+                else:
+                    failed_uploads += 1
+                    asset_name = generate_clean_name(original_path, name_tags)
+                    failed_upload_details.append(f"{asset_name} ({error})")
+                    logger.error(f"✗ Failed: {os.path.basename(original_path)} - {error}")
+            except Exception as e:
+                failed_uploads += 1
+                asset_name = generate_clean_name(original_path, name_tags)
+                failed_upload_details.append(f"{asset_name} (Exception: {e})")
+                logger.error(f"✗ Exception: {os.path.basename(original_path)} - {e}")
+    
+    return successful_uploads, failed_uploads, failed_upload_details
+
 def main():
     """Main function to control the uploader."""
+    session_manager = OptimizedSession()
+    
     try:
         # Load and validate configuration
         config = load_config()
@@ -358,6 +446,8 @@ def main():
         price = config["assets_price"]
         name_tags = config["name_tags"]
         sleep_time = config["sleep_each_upload"]
+        parallel_uploads = config.get("parallel_uploads", False)
+        max_workers = config.get("max_workers", 3)
         
         if name_tags:
             logger.info(f"Found {len(name_tags)} tags to append to names. Order is determined by config.json.")
@@ -368,38 +458,45 @@ def main():
             return
         
         logger.info("Starting upload process")
-        successful_uploads = 0
-        failed_uploads = 0
-        failed_upload_details = []
+        start_time = time.time()
         
-        # Process each image
-        for i, (original_path, asset_type) in enumerate(images_to_process, 1):
-            logger.info(f"Processing item {i} of {len(images_to_process)}: {os.path.basename(original_path)}")
-            
-            success, error = process_single_asset(
-                original_path, 
-                asset_type, 
-                cookie, 
-                group_id, 
-                description, 
-                price, 
-                name_tags
+        if parallel_uploads and len(images_to_process) > 1:
+            logger.info(f"Using parallel processing with {max_workers} workers")
+            successful_uploads, failed_uploads, failed_upload_details = process_assets_parallel(
+                images_to_process, cookie, group_id, description, price, name_tags, max_workers
             )
+        else:
+            logger.info("Using sequential processing")
+            successful_uploads = 0
+            failed_uploads = 0
+            failed_upload_details = []
             
-            if success:
-                successful_uploads += 1
-            else:
-                failed_uploads += 1
-                asset_name = generate_clean_name(original_path, name_tags)
-                failed_upload_details.append(f"{asset_name} ({error})")
-            
-            # Sleep between uploads to avoid rate limiting
-            if i < len(images_to_process):
-                logger.debug(f"Sleeping for {sleep_time} seconds before next upload")
-                time.sleep(sleep_time)
+            # Process each image sequentially
+            for i, (original_path, asset_type) in enumerate(images_to_process, 1):
+                logger.info(f"Processing item {i} of {len(images_to_process)}: {os.path.basename(original_path)}")
+                
+                success, error = process_single_asset(
+                    original_path, 
+                    asset_type, 
+                    cookie, 
+                    group_id, 
+                    description, 
+                    price, 
+                    name_tags,
+                    sleep_time if i < len(images_to_process) else 0  # No sleep after last item
+                )
+                
+                if success:
+                    successful_uploads += 1
+                else:
+                    failed_uploads += 1
+                    asset_name = generate_clean_name(original_path, name_tags)
+                    failed_upload_details.append(f"{asset_name} ({error})")
         
         # Print summary
+        elapsed_time = time.time() - start_time
         logger.info("Process Finished")
+        logger.info(f"Total time: {elapsed_time:.2f} seconds")
         logger.info(f"Successful: {successful_uploads} | Failed: {failed_uploads}")
         
         if failed_upload_details:
@@ -411,6 +508,8 @@ def main():
         logger.error(f"Configuration error: {e}")
     except Exception as e:
         logger.error(f"Unexpected error in main process: {e}", exc_info=True)
+    finally:
+        session_manager.close()
 
 if __name__ == "__main__":
     main()
