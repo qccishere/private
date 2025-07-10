@@ -1,4 +1,4 @@
-# xool
+# xool NOT MINE
 a good and fast clothing bot made for groups. 
 - IF YOU NEED HELP JOIN https://discord.gg/FuWMnMWQ7r
 - every 5 stars 1 update
